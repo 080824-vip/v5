@@ -19,8 +19,8 @@
 # ==============================================================================
 
 # --- CẤU HÌNH ---
-PORT_RANGE_START=20000
-PORT_RANGE_END=20349
+PORT_RANGE_START=30000
+PORT_RANGE_END=30349
 TRAFFIC_THRESHOLD_BYTES=943718400 # 900MB
 DEFAULT_VALID_DAYS=31 # Số ngày sử dụng mặc định sau khi kích hoạt
 
