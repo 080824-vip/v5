@@ -14,7 +14,7 @@ function usage() { echo "Usage: $0 [-s | --subnet <16|32|48|64|80|96|112> proxy 
                           [-t | --proxies-type <http|socks5> result proxies type (default http)]
                           [-r | --rotating-interval <0-59> rotating time of external proxies address in minutes (default 0, disabled)]
                           [--rotate-every-request <bool> use random external address for every request (--rotating-interval will be ignored)]
-                          [--start-port <5000-65536> start port for backconnect ipv4 (default 20000)]
+                          [--start-port <5000-65536> start port for backconnect ipv4 (default 30000)]
                           [-l | --localhost <bool> allow connections only for localhost (backconnect on 127.0.0.1)]
                           [-f | --backconnect-proxies-file <string> path to file, in which backconnect proxies list will be written
                                 when proxies start working (default \`~/proxyserver/backconnect_proxies.list\`)]                                                     
@@ -42,7 +42,7 @@ eval set -- "$options"
 # Set default values for optional arguments
 subnet=64
 proxies_type="http"
-start_port=20000
+start_port=30000
 rotating_interval=0
 use_localhost=false
 use_random_auth=false
@@ -384,12 +384,12 @@ function configure_ndppd(){
   ip route add local $subnet_mask::/$subnet dev $interface_name;
 
   cat > /etc/ndppd.conf <<-EOF
-  route-ttl 20000
+  route-ttl 30000
 
   proxy $interface_name {
     router no
     timeout 500
-    ttl 20000
+    ttl 30000
 
     rule $subnet_mask::/$subnet {
         static
