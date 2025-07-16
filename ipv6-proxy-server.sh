@@ -13,7 +13,7 @@ function usage() { echo "Usage: $0 [-s | --subnet <16|32|48|64|80|96|112> proxy 
                           [--random <bool> generate random username/password for each IPv4 backconnect proxy instead of predefined (default false)] 
                           [-t | --proxies-type <http|socks5> result proxies type (default http)]
                           [-r | --rotating-interval <0-59> proxies extarnal address rotating time in minutes (default 0, disabled)]
-                          [--start-port <5000-65536> start port for backconnect ipv4 (default 30000)]
+                          [--start-port <5000-65536> start port for backconnect ipv4 (default 20000)]
                           [-l | --localhost <bool> allow connections only for localhost (backconnect on 127.0.0.1)]
                           [-f | --backconnect-proxies-file <string> path to file, in which backconnect proxies list will be written
                                 when proxies start working (default \`~/proxyserver/backconnect_proxies.list\`)]    
@@ -43,7 +43,7 @@ eval set -- "$options"
 # Set default values for optional arguments
 subnet=64
 proxies_type="http"
-start_port=30000
+start_port=20000
 rotating_interval=0
 use_localhost=false
 use_random_auth=false
