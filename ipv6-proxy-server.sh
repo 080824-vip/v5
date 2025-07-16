@@ -12,12 +12,13 @@ function usage() { echo "Usage: $0 [-s | --subnet <16|32|48|64|80|96|112> proxy 
                           [-p | --password <string> proxy password]
                           [--random <bool> generate random username/password for each IPv4 backconnect proxy instead of predefined (default false)] 
                           [-t | --proxies-type <http|socks5> result proxies type (default http)]
-                          [-r | --rotating-interval <0-59> rotating time of external proxies address in minutes (default 0, disabled)]
-                          [--rotate-every-request <bool> use random external address for every request (--rotating-interval will be ignored)]
+                          [-r | --rotating-interval <0-59> proxies extarnal address rotating time in minutes (default 0, disabled)]
                           [--start-port <5000-65536> start port for backconnect ipv4 (default 30000)]
                           [-l | --localhost <bool> allow connections only for localhost (backconnect on 127.0.0.1)]
                           [-f | --backconnect-proxies-file <string> path to file, in which backconnect proxies list will be written
-                                when proxies start working (default \`~/proxyserver/backconnect_proxies.list\`)]                                                     
+                                when proxies start working (default \`~/proxyserver/backconnect_proxies.list\`)]    
+                          [-d | --disable-inet6-ifaces-check <bool> disable /etc/network/interfaces configuration check & exit when error
+                                use only if configuration handled by cloud-init or something like this (for example, on Vultr servers)]                                                      
                           [-m | --ipv6-mask <string> constant ipv6 address mask, to which the rotated part is added (or gateaway)
                                 use only if the gateway is different from the subnet address]
                           [-i | --interface <string> full name of ethernet interface, on which IPv6 subnet was allocated
@@ -31,7 +32,7 @@ function usage() { echo "Usage: $0 [-s | --subnet <16|32|48|64|80|96|112> proxy 
                           [--info <bool> print info about running proxy server]
                           " 1>&2; exit 1; }
 
-options=$(getopt -o lhs:c:u:p:t:r:m:f:i:b: --long help,rotate-every-request,localhost,random,uninstall,info,subnet:,proxy-count:,username:,password:,proxies-type:,rotating-interval:,ipv6-mask:,interface:,start-port:,backconnect-proxies-file:,backconnect-ip:,allowed-hosts:,denied-hosts: -- "$@")
+options=$(getopt -o ldhs:c:u:p:t:r:m:f:i:b: --long help,localhost,disable-inet6-ifaces-check,random,uninstall,info,subnet:,proxy-count:,username:,password:,proxies-type:,rotating-interval:,ipv6-mask:,interface:,start-port:,backconnect-proxies-file:,backconnect-ip:,allowed-hosts:,denied-hosts: -- "$@")
 
 # Throw error and chow help message if user don`t provide any arguments
 if [ $? != 0 ] ; then echo "Error: no arguments provided. Terminating..." >&2 ; usage ; fi;
@@ -47,16 +48,14 @@ rotating_interval=0
 use_localhost=false
 use_random_auth=false
 uninstall=false
-try_rotate_every_request=false
-rotate_every_request=false
 print_info=false
+inet6_network_interfaces_configuration_check=true
 backconnect_proxies_file="default"
 # Global network inteface name
 interface_name="$(ip -br l | awk '$1 !~ "lo|vir|wl|@NONE" { print $1 }' | awk 'NR==1')"
 # Log file for script execution
 script_log_file="/var/tmp/ipv6-proxy-server-logs.log"
 backconnect_ipv4=""
-subnet_mask=""
 
 while true; do
   case "$1" in
@@ -72,13 +71,13 @@ while true; do
     -f | --backconnect_proxies_file ) backconnect_proxies_file="$2"; shift 2;;
     -i | --interface ) interface_name="$2"; shift 2;;
     -l | --localhost ) use_localhost=true; shift ;;
+    -d | --disable-inet6-ifaces-check ) inet6_network_interfaces_configuration_check=false; shift ;;
     --allowed-hosts ) allowed_hosts="$2"; shift 2;;
     --denied-hosts ) denied_hosts="$2"; shift 2;;
     --uninstall ) uninstall=true; shift ;;
     --info ) print_info=true; shift ;;
     --start-port ) start_port="$2"; shift 2;;
     --random ) use_random_auth=true; shift ;;
-    --rotate-every-request ) try_rotate_every_request=true; shift ;;
     -- ) shift; break ;;
     * ) break ;;
   esac
@@ -167,8 +166,6 @@ proxyserver_config_path="$proxy_dir/3proxy/3proxy.cfg"
 proxyserver_info_file="$proxy_dir/running_server.info"
 # Path to file with all result (external) ipv6 addresses
 random_ipv6_list_file="$proxy_dir/ipv6.list"
-# Path to file that used to check are proxy router via ndppd or not
-ndppd_routing_file="$proxy_dir/ndppd.routed"
 # Path to file with proxy random usernames/password
 random_users_list_file="$proxy_dir/random_users.list"
 # Define correct path to file with backconnect proxies list, if it isn't defined by user
@@ -195,36 +192,6 @@ function is_package_installed(){
   if [ $(dpkg-query -W -f='${Status}' $1 2>/dev/null | grep -c "ok installed") -eq 0 ]; then return 1; else return 0; fi;
 }
 
-function is_ndppd_running(){
-  # Use regex for ndppd to remove grep command output in `ps aux`
-  if ps aux | grep -q "[n]dppd"; then return 0; else return 1; fi;
-}
-
-function is_ndppd_routing_working(){
-  if ! is_ndppd_running; then 
-    log_err "ndppd isn't running. You cannot use every-request rotation.";
-    return 1;
-  fi;
-  if ! is_package_installed "curl"; then install_package "curl"; fi;
-  if [[ $(cat /proc/sys/net/ipv6/conf/$interface_name/proxy_ndp) != 1 ]]; then
-    log_err "proxy_ndp not set, you cannot use every-request rotation before it.";
-    return 1;
-  fi;
-
-  # Use this ip (subnet mask then zeros then 5252) to test, can we access websites with it or not
-  random_ipv6_for_test=$subnet_mask::5252;
-
-  # Try many websites to verify that we can use this IP, because some sites can be down
-  if curl -m 5 -s --interface $random_ipv6_for_test ipv6.ip.sb | grep -q $random_ipv6_for_test; then return 0; fi;
-  if curl -m 5 -s --interface $random_ipv6_for_test https://whatismyv6.com | grep -q $random_ipv6_for_test; then return 0; fi;
-  if curl -m 5 -s --interface $random_ipv6_for_test http://ip6only.me | grep -q $random_ipv6_for_test; then return 0; fi;
-  if curl -m 5 -s --interface $random_ipv6_for_test https://myipv6.is | grep -q $random_ipv6_for_test; then return 0; fi;
-  if curl -m 5 -s --interface $random_ipv6_for_test https://dnschecker.org/whats-my-ip-address.php | grep -q $random_ipv6_for_test; then return 0; fi;
-
-  log_err "Cannot connect to at least one website to verify, that test IPv6 address for ndppd subnet is available."
-  return 1;
-}
-
 function create_random_string(){
   tr -dc A-Za-z0-9 </dev/urandom | head -c $1 ; echo ''
 }
@@ -236,7 +203,7 @@ function kill_3proxy(){
 }
 
 function remove_ipv6_addresses_from_iface(){
-  if grep -q "false" $ndppd_routing_file || ! test -s $ndppd_routing_file && test -s $random_ipv6_list_file; then
+  if test -f $random_ipv6_list_file; then
     # Remove old ips from interface
     for ipv6_address in $(cat $random_ipv6_list_file); do ip -6 addr del $ipv6_address dev $interface_name; done;
     rm $random_ipv6_list_file; 
@@ -281,8 +248,9 @@ function install_package(){
   fi;
 }
 
+# DONT use before curl package is installed
 function get_backconnect_ipv4(){
-  if $use_localhost; then echo "127.0.0.1"; return; fi;
+  if [ $use_localhost == true ]; then echo "127.0.0.1"; return; fi;
   if [ ! -z "$backconnect_ipv4" -a "$backconnect_ipv4" != " " ]; then echo $backconnect_ipv4; return; fi;
 
   local maybe_ipv4=$(ip addr show $interface_name | awk '$1 == "inet" {gsub(/\/.*$/, "", $2); print $2}')
@@ -300,9 +268,9 @@ function get_backconnect_ipv4(){
 function check_ipv6(){
   # Check is ipv6 enabled or not
   if test -f /proc/net/if_inet6; then
-	  echo "IPv6 interface is enabled";
+    echo "IPv6 interface is enabled";
   else
-	  log_err_and_exit "Error: inet6 (ipv6) interface is not enabled. Enable IP v6 on your system.";
+    log_err_and_exit "Error: inet6 (ipv6) interface is not enabled. Enable IP v6 on your system.";
   fi;
 
   if [[ $(ip -6 addr show scope global) ]]; then
@@ -312,12 +280,14 @@ function check_ipv6(){
   fi;
 
   local ifaces_config="/etc/network/interfaces";
-  if [ ! -f $ifaces_config ]; then log_err "Potential error: interfaces config ($ifaces_config) doesn't exist"; fi;
+  if [ $inet6_network_interfaces_configuration_check = true ]; then
+    if [ ! -f $ifaces_config ]; then log_err_and_exit "Error: interfaces config ($ifaces_config) doesn't exist"; fi;
     
-  if grep 'inet6' $ifaces_config > /dev/null; then
-    echo "Network interfaces for IPv6 configured correctly";
-  else
-    log_err "Potential error: $ifaces_config has no inet6 (IPv6) configuration.";
+    if grep 'inet6' $ifaces_config > /dev/null; then
+      echo "Network interfaces for IPv6 configured correctly";
+    else
+      log_err_and_exit "Error: $ifaces_config has no inet6 (IPv6) configuration.";
+    fi;
   fi;
 
   if [[ $(ping6 -c 1 google.com) != *"Network is unreachable"* ]] &> /dev/null; then 
@@ -332,7 +302,7 @@ function check_ipv6(){
 function install_requred_packages(){
   apt update &>> $script_log_file;
 
-  requred_packages=("make" "g++" "wget" "curl" "cron" "ndppd" "procps");
+  requred_packages=("make" "g++" "wget" "curl" "cron");
   for package in ${requred_packages[@]}; do install_package $package; done;
 
   echo -e "\nAll required packages installed successfully";
@@ -379,29 +349,6 @@ function configure_ipv6(){
   fi;
 }
 
-function configure_ndppd(){
-  # Add neighbour route to redirect connections from any address from the subnet to interface and ndppd can handle them
-  ip route add local $subnet_mask::/$subnet dev $interface_name;
-
-  cat > /etc/ndppd.conf <<-EOF
-  route-ttl 30000
-
-  proxy $interface_name {
-    router no
-    timeout 500
-    ttl 30000
-
-    rule $subnet_mask::/$subnet {
-        static
-    }
-  }
-EOF
-  
-  service ndppd restart;
-
-  systemctl is-active --quiet ndppd | echo "ndppd is up and running";
-}
-
 function add_to_cron(){
   delete_file_if_exists $cron_script_path;
 
@@ -438,7 +385,7 @@ function remove_from_cron(){
 
 function generate_random_users_if_needed(){
   # No need to generate random usernames and passwords for proxies, if auth=none or one username/password for all proxies provided
-  if $use_random_auth; then return; fi;
+  if [ $use_random_auth != true ]; then return; fi;
   delete_file_if_exists $random_users_list_file;
   
   for i in $(seq 1 $proxy_count); do 
@@ -452,18 +399,6 @@ function create_startup_script(){
   is_auth_used;
   local use_auth=$?;
 
-  is_ndppd_routing_working;
-  local can_route_via_ndppd=$?
-
-  if $try_rotate_every_request; then
-    if [ $can_route_via_ndppd -eq 0 ]; then
-      echo "Rotation for every request is possible, starting config generation..."
-      rotate_every_request=true;
-    else
-      log_err_and_exit "IP rotation for every request isn't prossible for your server. Check logs, maybe it's a problem with your VPS provider";
-    fi;
-  fi;
-
   # Add main script that runs proxy server and rotates external ip's, if server is already running
   cat > $startup_script_path <<-EOF
   #!$bash_location
@@ -475,40 +410,26 @@ function create_startup_script(){
   }
 
   # Save old 3proxy daemon pids, if exists
-  proxyserver_process_pids=(\`pgrep -f [3]proxy\`)
+  proxyserver_process_pids=()
+  while read -r pid; do
+    proxyserver_process_pids+=(\$pid)
+  done < <(ps -ef | awk '/[3]proxy/{print $2}');
 
   # Save old IPv6 addresses in temporary file to delete from interface after rotating
-  old_ipv6_list_file="$random_ipv6_list_file.old";
+  old_ipv6_list_file="$random_ipv6_list_file.old"
   if test -f $random_ipv6_list_file; 
     then cp $random_ipv6_list_file \$old_ipv6_list_file; 
     rm $random_ipv6_list_file;
-  fi;
-
-  old_ndppd_routing_file="$ndppd_routing_file.old";
-  if test -f $ndppd_routing_file;
-    then cp $ndppd_routing_file \$old_ndppd_routing_file;
-  fi;
-  if [ $can_route_via_ndppd -eq 0 ]; then echo "true" > $ndppd_routing_file; else echo "false" > $ndppd_routing_file; fi; 
+  fi; 
 
   # Array with allowed symbols in hex (in ipv6 addresses)
   array=( 1 2 3 4 5 6 7 8 9 0 a b c d e f )
-
-  # Truncate subnet - remove last symbols of block, if subnet isn't divisible by 16
-  function get_truncated_subnet_mask () {
-    # Divide by 4 to get number of redundant symbols in block (one symbol, 0-f, 2^4)
-    redundant_symbols_count=$(( ($subnet % 16) / 4 ))
-    last_subnet_block=$(echo $subnet_mask | awk -F ':' '{print $NF}')
-    symbols_count=\${#last_subnet_block}
-    trunc_symbols_count=\$(( \$redundant_symbols_count - (4 - \$symbols_count) ))
-    mask=$subnet_mask
-    echo \${mask::${#subnet_mask}-\$trunc_symbols_count}
-  }
 
   # Generate random hex symbol
   function rh () { echo \${array[\$RANDOM%16]}; }
 
   rnd_subnet_ip () {
-    echo -n \$(get_truncated_subnet_mask);
+    echo -n $(get_subnet_mask);
     symbol=$subnet
     while (( \$symbol < 128)); do
       if ((\$symbol % 16 == 0)); then echo -n :; fi;
@@ -517,6 +438,16 @@ function create_startup_script(){
     done;
     echo ;
   }
+
+  # Temporary variable to count generated ip's in cycle
+  count=1
+
+  # Generate random 'proxy_count' ipv6 of specified subnet and write it to 'ip.list' file
+  while [ "\$count" -le $proxy_count ]
+  do
+    rnd_subnet_ip >> $random_ipv6_list_file;
+    ((count+=1))
+  done;
 
   immutable_config_part="daemon
     nserver 1.1.1.1
@@ -537,19 +468,11 @@ function create_startup_script(){
     access_rules_part="
       deny * * $denied_hosts
       allow *"
-  elif [ -n "$allowed_hosts" ]; then
+  else
     access_rules_part="
       allow * * $allowed_hosts
       deny *"
-  else
-    access_rules_part="allow *"
   fi;
-  if $rotate_every_request; then 
-    access_rules_part="
-      \${access_rules_part}
-      parent 1000 extip $subnet_mask::/$subnet 0"
-  fi;
-    
 
   dedent immutable_config_part;
   dedent auth_part;
@@ -562,7 +485,7 @@ function create_startup_script(){
   count=0
   if [ "$proxies_type" = "http" ]; then proxy_startup_depending_on_type="proxy -6 -n -a"; else proxy_startup_depending_on_type="socks -6 -a"; fi;
   if [ $use_random_auth = true ]; then readarray -t proxy_random_credentials < $random_users_list_file; fi;
-  while [ "\$count" -le $proxy_count ]; do
+  for random_ipv6_address in \$(cat $random_ipv6_list_file); do
       if [ $use_random_auth = true ]; then
         IFS=":";
         read -r username password <<< "\${proxy_random_credentials[\$count]}";
@@ -571,13 +494,7 @@ function create_startup_script(){
         echo "\$access_rules_part" >> $proxyserver_config_path;
         IFS=$' \t\n';
       fi;
-      if $rotate_every_request; then
-        echo "\$proxy_startup_depending_on_type -p\$port -i$backconnect_ipv4" >> $proxyserver_config_path;
-      else
-        random_gateway_ipv6=\$(rnd_subnet_ip)
-        echo "\$random_gateway_ipv6" >> $random_ipv6_list_file;
-        echo "\$proxy_startup_depending_on_type -p\$port -i$backconnect_ipv4 -e\$random_gateway_ipv6" >> $proxyserver_config_path;
-      fi;
+      echo "\$proxy_startup_depending_on_type -p\$port -i$backconnect_ipv4 -e\$random_ipv6_address" >> $proxyserver_config_path;
       ((port+=1))
       ((count+=1))
   done
@@ -585,9 +502,7 @@ function create_startup_script(){
   # Script that adds all random ipv6 to default interface and runs backconnect proxy server
   ulimit -n 600000
   ulimit -u 600000
-  if [ $can_route_via_ndppd -eq 1 ]; then 
-    for ipv6_address in \$(cat ${random_ipv6_list_file}); do ip -6 addr add \$ipv6_address dev $interface_name; done; 
-  fi;
+  for ipv6_address in \$(cat ${random_ipv6_list_file}); do ip -6 addr add \$ipv6_address dev $interface_name; done;
   ${user_home_dir}/proxyserver/3proxy/bin/3proxy ${proxyserver_config_path}
 
   # Kill old 3proxy daemon, if it's working
@@ -596,7 +511,8 @@ function create_startup_script(){
   done;
 
   # Remove old random ip list after running new 3proxy instance
-  if  grep -q "false" \$old_ndppd_routing_file || ! test -s \$old_ndppd_routing_file && [ -s \$old_ipv6_list_file ]; then
+  if test -f \$old_ipv6_list_file; then
+    # Remove old ips from interface
     for ipv6_address in \$(cat \$old_ipv6_list_file); do ip -6 addr del \$ipv6_address dev $interface_name; done;
     rm \$old_ipv6_list_file; 
   fi;
@@ -626,7 +542,7 @@ function open_ufw_backconnect_ports(){
   close_ufw_backconnect_ports;
 
   # No need open ports if backconnect proxies on localhost
-  if $use_localhost; then return; fi;
+  if [ $use_localhost = true ]; then return; fi;
 
   if ! is_package_installed "ufw"; then echo "Firewall not installed, ports for backconnect proxy opened successfully"; return; fi;
 
@@ -669,14 +585,14 @@ function write_backconnect_proxies_to_file(){
     return;
   fi;
 
-  if $use_random_auth; then 
+  if [ $use_random_auth = true ]; then 
     local proxy_random_credentials;
     local count=0;
     readarray -t proxy_random_credentials < $random_users_list_file;
   fi;
 
   for port in $(eval echo "{$start_port..$last_port}"); do
-    if $use_random_auth; then 
+    if [ $use_random_auth = true ]; then 
       proxy_credentials=":${proxy_random_credentials[$count]}";
       ((count+=1))
     fi;
@@ -691,7 +607,7 @@ function write_proxyserver_info(){
 User info:
   Proxy count: $proxy_count
   Proxy type: $proxies_type
-  Proxy IP: $backconnect_ipv4
+  Proxy IP: $(get_backconnect_ipv4)
   Proxy ports: between $start_port and $last_port
   Auth: $(if is_auth_used; then if [ $use_random_auth = true ]; then echo "random user/password for each proxy"; else echo "user - $user, password - $password"; fi; else echo "disabled"; fi;)
   Rules: $(if ([ -n "$denied_hosts" ] || [ -n "$allowed_hosts" ]); then if [ -n "$denied_hosts" ]; then echo "denied hosts - $denied_hosts, all others are allowed"; else echo "allowed hosts - $allowed_hosts, all others are denied"; fi; else echo "no rules specified, all hosts are allowed"; fi;)
@@ -704,12 +620,12 @@ EOF
 Technical info:
   Subnet: /$subnet
   Subnet mask: $subnet_mask
-  File with generated IPv6 gateway addresses: $(if $rotate_every_request; then echo "No file specified, rotating every request with different random IP"; else echo "$random_ipv6_list_file"; fi;)
-  $(if [ $rotating_interval -ne 0 ]; then echo "Rotating interval: every $rotating_interval minutes"; else if $rotate_every_request; then echo "Rotating: every request"; else echo "Rotating: disabled"; fi; fi;)
+  File with generated IPv6 gateway addresses: $random_ipv6_list_file
+  $(if [ $rotating_interval -ne 0 ]; then echo "Rotating interval: every $rotating_interval minutes"; else echo "Rotating: disabled"; fi;)
 EOF
 }
 
-if $print_info; then
+if [ $print_info = true ]; then
   if ! is_proxyserver_installed; then log_err_and_exit "Proxy server isn't installed"; fi;
   if ! is_proxyserver_running; then log_err_and_exit "Proxy server isn't running. You can check log of previous run attempt in $script_log_file"; fi;
   if ! test -f $proxyserver_info_file; then log_err_and_exit "File with information about running proxy server not found"; fi;
@@ -718,7 +634,7 @@ if $print_info; then
   exit 0;
 fi;
 
-if $uninstall; then
+if [ $uninstall = true ]; then
   if ! is_proxyserver_installed; then log_err_and_exit "Proxy server is not installed"; fi;
   
   remove_from_cron;
@@ -735,16 +651,14 @@ fi;
 delete_file_if_exists $script_log_file;
 check_startup_parameters;
 check_ipv6;
-backconnect_ipv4=$(get_backconnect_ipv4);
-subnet_mask=$(get_subnet_mask)
 if is_proxyserver_installed; then
   echo -e "Proxy server already installed, reconfiguring:\n";
 else
   configure_ipv6;
   install_requred_packages;
   install_3proxy;
-  configure_ndppd;
 fi;
+backconnect_ipv4=$(get_backconnect_ipv4);
 generate_random_users_if_needed;
 create_startup_script;
 add_to_cron;
